@@ -85,13 +85,21 @@ IF %ERRORLEVEL% EQU 0 ( SET Version="Windows 10"
 												  
 
 VER | FINDSTR /IL "10.0." > NUL
-IF %ERRORLEVEL% EQU 0 ( SET Version="Windows 10" 
+IF %ERRORLEVEL% EQU 0 (
 											 set os=0
-												call :CheckAdmin
-												  call :os0	)					  
+												call :DetectWindows10Family
+													call :CheckAdmin
+														  call :os0	)					  
+
+if /i "%Version%"=="Unknown" goto UNKNOWN
+exit /b 
 
 
-												  
+:DetectWindows10Family
+set Version="Windows 10"
+set CurrentBuild=
+for /f "tokens=3" %%i in ('reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v CurrentBuildNumber 2^>nul ^| find /i "CurrentBuildNumber"') do set CurrentBuild=%%i
+if not "%CurrentBuild%"=="" if %CurrentBuild% GEQ 22000 set Version="Windows 11"
 exit /b 
 
 
@@ -201,9 +209,11 @@ echo Для выбора введите цифру и нажмите клавишу ENTER
 echo.
 echo.
 		
+set show_last_scan=0
+if exist "%log%" set show_last_scan=1
 set options="Запустить стандартную проверку" "Запустить расширенную процедуру проверки и восстановления" "Очистить Хранилище компонентов"
 
-if exist %log% (
+if %show_last_scan% EQU 1 (
     set options=%options% "Открыть результаты последнего сканирования"
 )
 
@@ -223,7 +233,7 @@ if %ErrorLevel% EQU 2 ( call :Restorehealth
 if %ErrorLevel% EQU 3 ( Call :Clearhealth 
 								call :os0 )
 
-if exist %log% (
+if %show_last_scan% EQU 1 (
     if %ErrorLevel% EQU 4 (
 							Call :findstrlog 
 							call :pcinfo 
@@ -232,10 +242,14 @@ if exist %log% (
 						)
 					)
 
-if %ErrorLevel% EQU 5 ( Call :Help 
+if %show_last_scan% EQU 1 if %ErrorLevel% EQU 5 ( Call :Help 
 								call :os0 )
 
-if %ErrorLevel% EQU 6 ( Call :Exite ) 						 
+if %show_last_scan% EQU 0 if %ErrorLevel% EQU 4 ( Call :Help 
+								call :os0 )
+
+if %show_last_scan% EQU 1 if %ErrorLevel% EQU 6 ( Call :Exite ) 						 
+if %show_last_scan% EQU 0 if %ErrorLevel% EQU 5 ( Call :Exite ) 						 
 										
 exit /b
 
@@ -315,7 +329,11 @@ Echo. >>"%log%"
 Echo. >>"%log%"
 Echo Контрольные точки восстановления: >>"%log%"
 Echo. >>"%log%"
+if exist "%SystemRoot%\System32\wbem\wmic.exe" (
 wmic shadowcopy get InstallDate /value | find "." >>"%log%"
+) else (
+echo WMIC not available, restore point list skipped. >>"%log%"
+)
 Echo. >>"%log%"
 Echo. >>"%log%"
 echo Сведения о ПК: >>"%log%" 
@@ -324,17 +342,22 @@ Echo. >>"%log%"
 SYSTEMINFO /FO LIST >>"%log%"   
 echo ::::::::::::::::::::::::::::::::::::::::::::::::::::: >>"%log%"    
 
+if exist "%SystemRoot%\System32\wbem\wmic.exe" (
 wmic qfe list > t
 chcp 866 >NUL
 cmd /d /a /c type t >>"%log%"
 del t
+) else (
+echo WMIC not available, optional hotfix list skipped. >>"%log%"
+)
 
 exit /b
 
 
 :open
 
-copy /y %windir%\Logs\CBS\sfcdoc.log sfcdoc.log
+if exist "%log%" copy /y "%log%" sfcdoc.log >nul
+call :ConvertLogToUtf8 "sfcdoc.log"
 Echo. >>"%log%"
 explorer.exe %~dp0
 Echo ......Открытие папки... >>"%log%"
@@ -368,6 +391,14 @@ exit /b
   
 :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::							 
 								 
+:ConvertLogToUtf8
+set "sourceFile=%~f1"
+if not exist "%sourceFile%" exit /b
+set "powerShellExe=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%powerShellExe%" exit /b
+"%powerShellExe%" -NoProfile -ExecutionPolicy Bypass -Command "$path = $env:sourceFile; $text = [System.Text.Encoding]::GetEncoding(866).GetString([System.IO.File]::ReadAllBytes($path)); $utf8 = New-Object System.Text.UTF8Encoding($true); [System.IO.File]::WriteAllText($path, $text, $utf8)"
+exit /b
+
 :XP
 echo Версия Вашей операционной системы: %VERSION%
 for %%i in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if exist %%i:\WIN51 set CDROM=%%i:
@@ -545,7 +576,7 @@ REG QUERY "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servic
 			echo Сейчас будет произведено восстановление хранилища компонентов Windows
 			echo Убедитесь, что вы подключены к сети Интернет и дождитесь завершения 
 			echo операции восстановления
-				DISM /Online /Cleanup-Image /ScanHealth
+				DISM /Online /Cleanup-Image /RestoreHealth
 					(if %ErrorLevel% EQU 0 (
 						echo Восстановление хранилища данных прошло корректно.
 						echo ......... Восстановление компонентов хранилища завершено корректно >>"%log2%"		
@@ -728,11 +759,12 @@ set UrlKey=UrlKey
 						if %Version%=="Windows 7" ( set UrlKey=http://aka.ms/diag_wu ) 
 							if %Version%=="Windows 8" ( set UrlKey=https://aka.ms/diag_wu )
 								if %Version%=="Windows 10" ( set UrlKey=https://aka.ms/wudiag )
-									if %Version%=="Windows 8.1" ( echo Загрузите и установите это обновление:
-										echo https://support.microsoft.com/ru-ru/help/3173424/servicing-stack-update-for-windows-8-1-and-windows-server-2012-r2-july 
-											set UrlKey=https://support.microsoft.com/ru-ru/help/3173424/servicing-stack-update-for-windows-8-1-and-windows-server-2012-r2-july
-												echo. )
-														)
+									if %Version%=="Windows 11" ( set UrlKey=https://aka.ms/wudiag )
+										if %Version%=="Windows 8.1" ( echo Загрузите и установите это обновление:
+											echo https://support.microsoft.com/ru-ru/help/3173424/servicing-stack-update-for-windows-8-1-and-windows-server-2012-r2-july 
+												set UrlKey=https://support.microsoft.com/ru-ru/help/3173424/servicing-stack-update-for-windows-8-1-and-windows-server-2012-r2-july
+													echo. )
+															)
 	
 start %UrlKey%
 echo.
@@ -748,9 +780,16 @@ exit /b
 ::FixIt запуск встроенного в систему средства::
 
 :FixItLocal
+
 cls
 echo.
 echo Сейчас запустится средство устранения неполадок.
+if not exist "%SystemRoot%\System32\msdt.exe" (
+echo Средство MSDT недоступно в этой версии Windows.
+echo Используйте встроенные средства устранения неполадок Windows.
+pause
+exit /b
+)
 echo Следуйте инструкциям и подсказкам до  
 echo последнего этапа.
 echo На последнем этапе нажмите ссылку 
@@ -762,8 +801,6 @@ echo скопированный таким образом текст в сообщение или текстовый
 echo файл, чтобы показать его тем, кто поможет разобраться, если 
 echo вы вдруг не сможете этого сделать самостоятельно.
 pause
-
-
 :: 201 Устранение неполадок, отображающих эффекты Aero, такие как прозрачность. Требуется наличие Windows Aero 
 :: /Windows 7; /
 
@@ -880,7 +917,7 @@ echo :::::::::::: %Version% :::::::::::::
 echo.
 echo Что именно восстанавливает этот сценарий ?
 echo.
-echo Часть защищенных системных фалов, необходимых для
+echo Часть защищенных системных файлов, необходимых для
 echo нормальной работы Windows и ее компонентов.
 echo В случае, если вы по итогу проверки получили 
 echo сообщение наподобие такого:
@@ -926,7 +963,7 @@ echo :::::::::::: %Version% :::::::::::::
 echo.
 echo Что именно восстанавливает этот сценарий ?
 echo.
-echo Часть защищенных системных фалов, необходимых для
+echo Часть защищенных системных файлов, необходимых для
 echo нормальной работы Windows и ее компонентов.
 echo В случае, если вы по итогу проверки получили 
 echo сообщение наподобие такого:
@@ -966,28 +1003,34 @@ echo увидеть в файле sfcdoc.log после стандартной проверки.
 echo.
 echo Расскажу немного о возможностях скрипта.
 echo Пункт №1 
-echo "Запустить стандартную проверку"    запускает
+echo "Запустить стандартную проверку" запускает
 echo стандартную проверку целостности системных файлов и,
-echo если возможно, восстанавливает их из хранилища компонентов. 
+echo если возможно, восстанавливает их из хранилища компонентов.
 echo.
 echo Пункт №2 
 echo "Запустить расширенную процедуру проверки и восстановления" 
 echo запускает поочередно восстановление хранилища компонентов 
-echo ^( интернет должен быть подключен ^)  , а затем стандартную
-echo проверку целостности системных файлов. Это займет немного 
-echo больше времени, но зато дает возможность автоматически 
-echo исправить нарушения целостности системных файлов.
+echo ^(для этого на Windows 8 - 11 нужен доступ к Интернету^) ,
+echo а затем стандартную проверку целостности системных файлов.
+echo Это займет немного больше времени, но зато дает возможность
+echo автоматически исправить нарушения целостности системных файлов.
 echo.
 echo Пункт №3 
-echo "Очистить Хранилище компонентов"     запускает 
-echo безопасную процедуру очистки хранилища компонентов, 
-echo то есть папки winsxs.
+echo "Очистить Хранилище компонентов" запускает
+echo безопасную процедуру очистки хранилища компонентов,
+echo то есть папки WinSxS. Пункт доступен для Windows 8 - 11.
 echo.
-echo Остальные пункты, думаю, понятны и без описания.
-echo p.s. Конечно, тут имеются еще и скрытые возможности,
-echo но они специально скрыты подальше от не опытных глаз,
-echo поэтому если вы не нашли как ими пользоваться,
-echo то не спрашивайте ...
+echo Пункт "Открыть результаты последнего сканирования" появляется
+echo после того, как будет создан файл отчета sfcdoc.log.
+echo.
+echo На новых версиях Windows часть дополнительных средств
+echo диагностики может отсутствовать ^(например WMIC или MSDT^).
+echo В этом случае сценарий пропустит недоступный шаг или
+echo покажет соответствующее сообщение.
+echo.
+echo Скрытые возможности по-прежнему доступны через команды 77 и 78,
+echo но на современных Windows отдельные диагностические мастера
+echo могут быть уже недоступны.
 echo.
 echo Спасибо за внимание и успехов^! 
 										)
@@ -1033,8 +1076,8 @@ echo.
 call :choice "Анализ состояния хранилища компонентов" "Процедура очистки хранилища компонентов" "Процедура восстановления хранилища компонентов"^
  "Создать точку восстановления" "Список доступных спецкоманд 78"  "Выход" 
 
-if %ErrorLevel% EQU 1 ( Call :sfco )
-																		
+if %ErrorLevel% EQU 1 ( Call :recbd )
+													
 if %ErrorLevel% EQU 2 ( Call :Clearhealth )
 
 if %ErrorLevel% EQU 3 ( Call :Restorehealth ) 
@@ -1043,6 +1086,7 @@ if %errorlevel% EQU 4 ( Call :SystemRestore )
 
 if %ErrorLevel% EQU 5 ( 
 		echo Кроме свободного ввода доступны следующие спецкоманды:
+		echo На новых версиях Windows часть встроенных мастеров MSDT может отсутствовать.
 		echo.
 		echo Устранение неполадок, которые могут мешать правильной
 		echo работе приложений из Microsoft Store 101
@@ -1097,22 +1141,36 @@ exit /b
 :secretlistinput
 
 set /p zero="Введите команду:"
-if %zero% EQU 77 ( Call :secretlist )
+if "%zero%"=="77" (
+	Call :secretlist
+	exit /b
+)
 
-if %zero% GTR 100 ( 
-	if %zero% LSS 126 ( 
-		call :FixIt ) else ( 
-			echo Команда не распознана
-				)) else ( echo Команда не распознана )
-					:: список доступных команд
+if "%zero%"=="" (
+	echo Команда не распознана
+	call :secretlistinput
+	exit /b
+)
 
-if %zero% GTR 200 ( 
-	if %zero% LSS 219 ( 
-		call :FixItLocal ) else ( 
-			echo Команда не распознана78
-				)) else ( echo Команда не распознана & call :secretlistinput)
+echo(%zero%| findstr /r "^[0-9][0-9]*$" >nul
+if errorlevel 1 (
+	echo Команда не распознана
+	call :secretlistinput
+	exit /b
+)
 
+if %zero% GTR 100 if %zero% LSS 126 (
+	call :FixIt
+	exit /b
+)
 
+if %zero% GTR 200 if %zero% LSS 219 (
+	call :FixItLocal
+	exit /b
+)
+
+echo Команда не распознана
+call :secretlistinput
 exit /b
 
 
